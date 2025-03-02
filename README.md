@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Demo2PPO: A UR5 RL Pipeline with Demonstration Collection and Behavior Cloning</title>
+
 </head>
 <body>
 
