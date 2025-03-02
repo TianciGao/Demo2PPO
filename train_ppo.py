@@ -1,19 +1,3 @@
-"""
-train_ppo.py
-
-目标:
-1) 通过 Legacy Remote API 连接 CoppeliaSim (端口=19999)
-2) 每次 reset 时, 随机生成红色障碍物(Obstacles) 和一个蓝色方块(目标)
-3) 使用 PPO 进行强化学习, 每步计算距离奖励、碰撞惩罚等
-4) 提供定制的EvalCallback, 写TensorBoard日志, 并可在D:\program\PPOrobot 下保存模型
-
-使用:
-1) 在CoppeliaSim中加载带有UR5机械臂和Lua子脚本的场景(脚本须包含 createScenarioLua, cleanupScenarioLua, collisionCheckLua等函数)
-2) 确保仿真启动(▶)
-3) 在命令行执行: python train_ppo.py
-4) (可选) 在另一命令行执行: tensorboard --logdir="D:\program\PPOrobot\tensorboard_logs"
-"""
-
 import os
 import sys
 import time
@@ -24,13 +8,12 @@ import numpy as np
 
 # ===========  0) 路径设定 & 日志目录  ===========
 
-ROOT_DIR = "D:\\program\\PPOrobot"  # 你可以根据需要修改
+ROOT_DIR = "D:\\program\\PPOrobot"  
 TENSORBOARD_DIR = os.path.join(ROOT_DIR, "tensorboard_logs")
 EVAL_LOG_DIR    = os.path.join(ROOT_DIR, "eval_logs")
 BEST_MODEL_DIR  = os.path.join(ROOT_DIR, "best_model")
 
 def make_unique_logdir(base_dir):
-    """创建一个带时间戳的日志目录, 并清理其中旧PPO_文件."""
     if not os.path.exists(base_dir):
         os.makedirs(base_dir, exist_ok=True)
 
@@ -50,7 +33,6 @@ def make_unique_logdir(base_dir):
     return full_path
 
 def remove_ppo_files_in(folder):
-    """移除以 PPO_ 开头的文件或文件夹, 避免命名冲突."""
     if not os.path.isdir(folder):
         return
     for fname in os.listdir(folder):
@@ -91,18 +73,14 @@ class UR5Env:
         self.tip_handle = -1
         self.target_handle = -1  # 每次随机生成 "Target", 训练时临时获取
 
-        # UR5 六个关节的角度限制, 视实际情况可修改
         self.joint_limits_low  = np.array([-math.pi]*6, dtype=np.float32)
         self.joint_limits_high = np.array([ math.pi]*6, dtype=np.float32)
 
-        # 初始化: 连接CoppeliaSim, 获取对象句柄
         self._connect()
         self._init_handles()
 
     def _connect(self):
-        # 先结束所有可能的连接
         sim.simxFinish(-1)
-        # 建立到127.0.0.1:19999端口的连接
         self.clientID = sim.simxStart('127.0.0.1', self.port, True, True, 5000, 5)
         if self.clientID == -1:
             print(f"[UR5Env] fail connect at port={self.port}")
@@ -177,23 +155,17 @@ class UR5Env:
         return self._get_state()
 
     def step_env(self, action):
-        """
-        对6个关节施加增量动作, 计算奖励, 检测碰撞, 返回 (obs, reward, done, info)
-        """
         scale=0.05  # action范围[-1,1] => 実际关节增量[-0.05, +0.05] (rad)
         increments = scale * np.array(action, dtype=np.float32)
 
-        # 获取当前6关节角
         oldAngles=[]
         for jh in self.joint_handles:
             rc,oa=sim.simxGetJointPosition(self.clientID, jh, sim.simx_opmode_blocking)
             oldAngles.append(oa if rc==sim.simx_return_ok else 0.)
 
-        # 加上增量, 并做clip
         newAngles = [o+a for (o,a) in zip(oldAngles,increments)]
         newAngles_clipped = np.clip(newAngles, self.joint_limits_low, self.joint_limits_high)
 
-        # 下发关节命令
         for jh, na in zip(self.joint_handles, newAngles_clipped):
             sim.simxSetJointTargetPosition(self.clientID, jh, na, sim.simx_opmode_oneshot)
 
@@ -201,13 +173,11 @@ class UR5Env:
             sim.simxSynchronousTrigger(self.clientID)
         time.sleep(0.1)
 
-        # 获取观测
         obs = self._get_state()
         tip = obs[6:9]
         tgt = obs[9:12]
         dist= float(np.linalg.norm(tip - tgt))
 
-        # 计算奖励 (距离惩罚 + 小步惩罚 + 临近奖励等)
         reward = -dist - 0.01
         if dist<0.1:
             reward +=1
@@ -218,25 +188,21 @@ class UR5Env:
         collision_flag=False
         success_flag=False
 
-        # 若距离足够近, 视为成功
         if dist<0.02:
             reward +=5
             success_flag=True
             done=True
 
-        # 关节是否超限
         out_of_limit= not np.allclose(newAngles, newAngles_clipped, atol=1e-7)
         if out_of_limit:
             reward-=15
             done=True
 
-        # 碰撞检测
         collision_flag = (self._collisionCheck()==1)
         if collision_flag:
             reward-=10
             done=True
 
-        # 步数限制
         self.current_step +=1
         if self.current_step>=self.max_episode_steps and not done:
             done=True
@@ -249,10 +215,6 @@ class UR5Env:
         return obs, float(reward), done, info
 
     def _collisionCheck(self):
-        """
-        调用Lua子脚本: collisionCheckLua
-        返回1表示碰撞, 0表示无碰撞
-        """
         ret,outInts,outFloats,outStrings,outBuffer = sim.simxCallScriptFunction(
             self.clientID,
             "UR5",  # lua脚本所在对象别名
@@ -266,9 +228,6 @@ class UR5Env:
         return 0
 
     def _cleanup_scenario(self):
-        """
-        调用Lua: cleanupScenarioLua => 删除上一回合生成的障碍和目标
-        """
         sim.simxCallScriptFunction(
             self.clientID,
             "UR5",
@@ -279,9 +238,6 @@ class UR5Env:
         )
 
     def _create_scenario(self, numObs=3, rMin=0.2, rMax=0.5, hMin=-0.1, hMax=0.1):
-        """
-        调用Lua: createScenarioLua => 生成随机的红色障碍 & 蓝色方块
-        """
         inInts = [numObs]
         inFloats= [rMin, rMax, hMin, hMax]
         sim.simxCallScriptFunction(
@@ -297,9 +253,6 @@ class UR5Env:
         )
 
     def _get_position_with_retry(self, handle, tries=10):
-        """
-        多次尝试获取位置, 兼容streaming延迟
-        """
         pos=[0,0,0]
         for i in range(tries):
             rc,pos_ = sim.simxGetObjectPosition(
@@ -313,9 +266,6 @@ class UR5Env:
         return pos
 
     def _get_state(self):
-        """
-        返回 [joint1..6, tip_x, tip_y, tip_z, tgt_x, tgt_y, tgt_z]
-        """
         st=[]
         for jh in self.joint_handles:
             rc,ang = sim.simxGetJointPosition(self.clientID, jh, sim.simx_opmode_blocking)
@@ -337,16 +287,11 @@ class UR5Env:
 
 
 class GymUr5Env(gym.Env):
-    """
-    使用 gymnasium Env API 再包装一层, 方便后续 stable-baselines3 调用.
-    """
     def __init__(self, port=19999, synchronous=True, max_steps=200):
         super().__init__()
         self.ur5 = UR5Env(port=port, synchronous=synchronous, max_steps=max_steps)
 
-        # 动作空间: [-1, +1]^6 => 6关节增量
         self.action_space = spaces.Box(low=-1, high=1, shape=(6,), dtype=np.float32)
-        # 状态空间: 12维 (6关节 + tip_xyz + target_xyz)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(12,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
@@ -370,9 +315,7 @@ from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.env_checker import check_env
 
 class MyEvalCallback(EvalCallback):
-    """
-    自定义评估回调: 每2000步评估1次, 并记录 success_rate, collision_rate 等.
-    """
+
     def __init__(self, eval_env, n_eval_episodes=5, eval_freq=2000,
                  best_model_save_path=None, log_path=None, verbose=1):
         super().__init__(
@@ -436,17 +379,14 @@ class MyEvalCallback(EvalCallback):
 # =========== 4) Main: 训练与测试 ===========
 
 def main():
-    # 1) 日志/模型目录
     os.makedirs(EVAL_LOG_DIR, exist_ok=True)
     os.makedirs(BEST_MODEL_DIR, exist_ok=True)
     tb_dir = make_unique_logdir(TENSORBOARD_DIR)
 
-    # 2) 构建env, 先检查其有效性
     env = GymUr5Env(port=19999, synchronous=True, max_steps=200)
     check_env(env, warn=True)
     eval_env = GymUr5Env(port=19999, synchronous=True, max_steps=200)
 
-    # 3) 自定义评估回调
     eval_callback = MyEvalCallback(
         eval_env=eval_env,
         n_eval_episodes=5,
@@ -456,7 +396,6 @@ def main():
         verbose=1
     )
 
-    # 4) 创建PPO并开始训练
     model = PPO(
         "MlpPolicy",
         env,
@@ -471,7 +410,6 @@ def main():
     model.save("ppo_ur5_model")
     print("[Train] PPO model saved => ppo_ur5_model")
 
-    # 5) 测试一下
     obs,_ = env.reset()
     done=False
     truncated=False
