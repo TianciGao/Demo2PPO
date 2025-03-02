@@ -1,23 +1,11 @@
-"""
-behavior_cloning.py
-
-离线行为克隆(BC): 从 'demo_data.npz' 中加载(s,a)对, 用 MSE回归 a=pi(s).
-输出 'bc_model.pth' 作为后续在线PPO微调的初始策略.
-"""
-
 import os
 import argparse
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-
 class BCPolicy(nn.Module):
-    """
-    与 SB3 MlpPolicy 类似的 2层64网络:
-      obs_dim -> (Linear64 -> ReLU) -> (Linear64 -> ReLU) -> (Linear -> act_dim)
-    """
+
     def __init__(self, obs_dim=12, act_dim=6, hidden_size=64):
         super().__init__()
         self.net = nn.Sequential(
@@ -103,7 +91,6 @@ def train_bc_model(demo_file="demo_data.npz",
         if (epoch+1)%5==0 or epoch==0:
             print(f"Epoch {epoch+1}/{max_epochs}, Loss={epoch_loss:.6f}")
 
-    # 保存
     torch.save(bc_model.state_dict(), bc_model_file)
     print(f"[BC] Done training. Model saved to {bc_model_file}")
     return bc_model
